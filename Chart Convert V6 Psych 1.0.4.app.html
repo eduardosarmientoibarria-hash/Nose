@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>V Slice Converter</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+<style>
+body {
+    font-family: Segoe UI, sans-serif;
+    background: #0d1117;
+    color: #c9d1d9;
+    margin: 0;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.container {
+    background: #161b22;
+    padding: 2rem;
+    border-radius: 12px;
+    width: 100%;
+    max-width: 800px;
+    border: 1px solid #30363d;
+    text-align: center;
+}
+
+h1 { color: #58a6ff; margin-top: 0; }
+
+#drop-zone {
+    border: 2px dashed #30363d;
+    padding: 30px;
+    border-radius: 8px;
+    cursor: pointer;
+    color: #58a6ff;
+    background: #0d1117;
+    user-select: none;
+}
+
+#drop-zone:hover {
+    border-color: #58a6ff;
+    background: #161b22;
+}
+
+.code-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    width: 100%;
+    max-width: 1000px;
+    margin-top: 20px;
+}
+
+@media (max-width: 768px) {
+    .code-grid { grid-template-columns: 1fr; }
+}
+
+.code-section {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 10px;
+}
+
+textarea {
+    width: 100%;
+    height: 300px;
+    background: #161b22;
+    color: #e6edf3;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    font-family: Consolas, monospace;
+    font-size: 12px;
+    padding: 10px;
+}
+
+#file-input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+    <h1>V Slice Converter By Gamer_CountryBalls And Panchito Manriquez</h1>
+    <div id="drop-zone">
+        📂 Toca aquí o arrastra un chart.json de Psych Engine
+    </div>
+    <input type="file" id="file-input" accept=".json">
+</div>
+
+<div class="code-grid">
+    <div class="code-section">
+        <h3>📄 chart.json</h3>
+        <textarea id="chart-area" readonly></textarea>
+    </div>
+    <div class="code-section">
+        <h3>📄 metadata.json</h3>
+        <textarea id="meta-area" readonly></textarea>
+    </div>
+</div>
+
+<script>
+const dropZone = document.getElementById("drop-zone");
+const fileInput = document.getElementById("file-input");
+const chartArea = document.getElementById("chart-area");
+const metaArea = document.getElementById("meta-area");
+
+dropZone.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", e => e.target.files.length && loadFile(e.target.files[0]));
+dropZone.addEventListener("dragover", e => e.preventDefault());
+dropZone.addEventListener("drop", e => {
+    e.preventDefault();
+    e.dataTransfer.files.length && loadFile(e.dataTransfer.files[0]);
+});
+
+function detectDifficulty(name) {
+    name = name.toLowerCase();
+    if (name.includes("easy")) return "easy";
+    if (name.includes("hard")) return "hard";
+    return "normal";
+}
+
+function unwrapSong(data) {
+    return data.song && typeof data.song === "object" ? data.song : data;
+}
+
+function detectFormat(data) {
+    if (data.strumLines) return "codename_v2";
+    const song = unwrapSong(data);
+    if (song.notes?.[0]?.sectionNotes) return "psych";
+    return "unknown";
+}
+
+function extractTimeChanges(song) {
+    const out = [];
+    let bpm = song.bpm || 100;
+    let time = 0;
+    out.push({ t: 0, b: 0, bpm, n: 4, d: 4, bt: [4,4,4,4] });
+    
+    song.notes?.forEach(sec => {
+        const len = (60000 / bpm) * (sec.sectionBeats || 4);
+        if (sec.changeBPM && sec.bpm && sec.bpm !== bpm) {
+            out.push({
+                t: Math.round(time),
+                b: 0,
+                bpm: sec.bpm,
+                n: 4, d: 4, bt: [4,4,4,4]
+            });
+            bpm = sec.bpm;
+        }
+        time += len;
+    });
+    return out;
+}
+
+async function loadFile(file) {
+    const reader = new FileReader();
+    reader.onload = async e => {
+        const raw = JSON.parse(e.target.result);
+        const fmt = detectFormat(raw);
+        const song = unwrapSong(raw);
+        const diff = detectDifficulty(file.name);
+        const name = file.name.replace(".json","").split("-")[0];
+
+        /* ----- NOTES & EVENTS (FocusCamera) ----- */
+        const notesArr = [];
+        const eventsArr = [];
+        let lastFocus = -1;
+        let currentTime = 0;
+        let currentBpm = song.bpm || 100;
+
+        if (fmt === "psych") {
+            song.notes?.forEach(sec => {
+                // Cambiar BPM si la sección lo requiere para el cálculo del tiempo
+                if (sec.changeBPM && sec.bpm) currentBpm = sec.bpm;
+
+                // Lógica de FocusCamera basada en mustHitSection
+                const focusChar = sec.mustHitSection ? 0 : 1;
+                if (focusChar !== lastFocus) {
+                    eventsArr.push({
+                        t: Math.round(currentTime),
+                        e: "FocusCamera",
+                        v: { char: focusChar }
+                    });
+                    lastFocus = focusChar;
+                }
+
+                // Notas
+                sec.sectionNotes?.forEach(n => {
+                    notesArr.push({
+                        t: n[0],
+                        d: n[1],
+                        l: n[2] || 0,
+                        p: []
+                    });
+                });
+
+                // Incrementar tiempo basado en la duración de la sección
+                const sectionBeats = sec.sectionBeats || 4;
+                currentTime += (60000 / currentBpm) * sectionBeats;
+            });
+        }
+
+        notesArr.sort((a,b) => a.t - b.t);
+
+        const chart = {
+            version: "2.0.0",
+            scrollSpeed: { [diff]: song.speed || 2.5 },
+            notes: { [diff]: notesArr },
+            events: eventsArr,
+            generatedBy: "Friday Night Funkin' - v0.8.1"
+        };
+
+        const metadata = {
+            version: "2.2.4",
+            songName: song.song || name,
+            artist: song.artist || "Unknown",
+            charter: "V-Slice Converter",
+            looped: false,
+            offsets: { instrumental: 0, altInstrumentals:{}, vocals:{}, altVocals:{} },
+            playData: {
+                difficulties: [diff],
+                characters: {
+                    player: song.player1 || "bf",
+                    girlfriend: song.gfVersion || "gf",
+                    opponent: song.player2 || "dad",
+                    instrumental: "",
+                    opponentVocals: [song.player2 || "dad"],
+                    playerVocals: [song.player1 || "bf"]
+                },
+                stage: song.stage || "stage",
+                noteStyle: "funkin",
+                ratings: { easy:3, normal:5, hard:6 },
+                previewStart: 0,
+                previewEnd: 0
+            },
+            generatedBy: "Friday Night Funkin' - v0.8.1",
+            timeFormat: "ms",
+            timeChanges: extractTimeChanges(song)
+        };
+
+        chartArea.value = JSON.stringify(chart, null, 2);
+        metaArea.value = JSON.stringify(metadata, null, 2);
+
+        const zip = new JSZip();
+        zip.file(`${name}-chart.json`, chartArea.value);
+        zip.file(`${name}-metadata.json`, metaArea.value);
+        const blob = await zip.generateAsync({ type: "blob" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `${name}_V-Slice.zip`;
+        a.click();
+    };
+    reader.readAsText(file);
+}
+</script>
+
+</body>
+</html>
